@@ -1,5 +1,5 @@
 from dotenv import load_dotenv
-from langgraph.graph import MessageState
+from langgraph.graph import MessagesState
 from langgraph.prebuilt import ToolNode
 from react import llm,tools
 
@@ -9,7 +9,7 @@ SYSTEM_MESSAGE="""
 You are a helpful assistant that can answer questions and perform tasks using the tools provided."""
 
 
-def run_agent(state:MessageState):
+def run_agent_reasoning(state:MessagesState):
     """
     Run the agent reasoning node
     """
