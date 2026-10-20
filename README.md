@@ -1855,3 +1855,458 @@ project are: 1. The registered tool input schemas must match the
 model's actual tool-call arguments. 2. The current loop condition counts
 `ToolMessage` objects, not actual iteration cycles. A dedicated counter
 is more reliable.
+
+
+---
+
+# Adaptive RAG with LangGraph
+
+## 1. What is Adaptive RAG?
+
+**Adaptive RAG (Adaptive Retrieval-Augmented Generation)** selects an
+appropriate answering or retrieval strategy based on the user's question
+and the available evidence. Instead of sending every question through
+the same retrieval pipeline, the graph can route different questions to
+different workflows.
+
+For example:
+
+-   A simple question may be answered directly without retrieval.
+-   A question about private project documentation may use a local
+    retriever.
+-   A question requiring current information may use web search.
+-   A complex question may use retrieval plus additional evaluation or
+    correction.
+
+Adaptive RAG is a broad design approach rather than one mandatory graph
+structure. The exact routing logic depends on the application.
+
+## 2. Why do we need Adaptive RAG?
+
+A single fixed RAG pipeline can waste resources or choose the wrong
+information source:
+
+1.  Retrieving documents for every simple question can add unnecessary
+    latency and cost.
+2.  Using only a local vector database may fail when the question asks
+    about current information that is not in the database.
+3.  Using web search for every question is unnecessary when the answer
+    is already available in trusted internal documents.
+4.  Complex questions may need a stronger workflow than simple
+    questions.
+
+Adaptive RAG addresses these problems by choosing a route suited to the
+question.
+
+## 3. Example workflow
+
+A common LangGraph implementation can use this structure:
+
+``` text
+                         START
+                           |
+                           v
+                    classify_question
+                           |
+             +-------------+-------------+
+             |             |             |
+             v             v             v
+        direct_answer  local_retrieval  web_search
+             |             |             |
+             |             v             |
+             |       grade_documents     |
+             |             |             |
+             |       +-----+-----+       |
+             |       |           |       |
+             |       v           v       |
+             |   generate    web_search  |
+             |       |           |       |
+             +-------+-----------+-------+
+                         |
+                         v
+                   final_answer
+                         |
+                        END
+```
+
+This is an illustrative architecture, not a required Adaptive RAG
+design. A real graph may merge nodes, use a different classifier, or
+include answer evaluation and retries.
+
+## 4. How it differs from CRAG and Self-RAG
+
+  -----------------------------------------------------------------------
+  Approach                Main decision or check  Typical behavior
+  ----------------------- ----------------------- -----------------------
+  Basic RAG               No explicit adaptive    Retrieve, then generate
+                          decision                
+
+  CRAG                    Are retrieved documents Use good local evidence
+                          relevant?               or correct retrieval,
+                                                  for example with web
+                                                  search
+
+  Self-RAG                Should retrieval be     Reflect on retrieval
+                          used, and is the        and generation
+                          evidence-supported      
+                          answer good?            
+
+  Adaptive RAG            Which                   Route to direct
+                          answering/retrieval     answering, local
+                          strategy suits this     retrieval, web search,
+                          question?               or another workflow
+  -----------------------------------------------------------------------
+
+These approaches overlap and can be combined. For example, an Adaptive
+RAG router can choose a CRAG workflow for a question that needs local
+documents, and that workflow can be extended with answer evaluation
+inspired by Self-RAG.
+
+**Memory aid:** - CRAG corrects retrieval. - Self-RAG reflects on
+retrieval and generation. - Adaptive RAG chooses the strategy.
+
+## 5. Define the graph state
+
+LangGraph nodes read the shared state and return dictionaries containing
+the fields they want to update. The following example uses a `TypedDict`
+state with fields for the question, route, retrieved documents, context,
+and answer.
+
+``` python
+from typing import Any, TypedDict
+
+class GraphState(TypedDict, total=False):
+    question: str
+    route: str
+    documents: list[Any]
+    context: str
+    answer: str
+```
+
+`total=False` makes the keys optional in the type definition, which is
+useful because not every route populates every field. In a production
+graph, define more precise document and output types where practical.
+
+## 6. Build a router
+
+The router decides which route should handle the question. A simple
+implementation can use rules, while a more flexible implementation can
+use an LLM classifier with structured output.
+
+### Option A: Rule-based router
+
+``` python
+def route_question(state: GraphState) -> str:
+    question = state["question"].lower()
+
+    if any(term in question for term in [
+        "latest", "today", "current", "recent", "this week"
+    ]):
+        return "web_search"
+
+    if any(term in question for term in [
+        "my documents", "project documentation", "internal docs"
+    ]):
+        return "local_retrieval"
+
+    return "direct_answer"
+```
+
+This is easy to understand, but keyword routing is limited. It may
+misclassify questions when users phrase them differently. For a real
+application, use an LLM-based classifier or combine rules with a
+classifier.
+
+### Option B: LLM-based router
+
+An LLM router can return a constrained label such as `direct_answer`,
+`local_retrieval`, or `web_search`. Use a schema with an enum or
+`Literal` type so the output is constrained to valid routes, then
+validate it before routing.
+
+``` python
+from typing import Literal
+from pydantic import BaseModel, Field
+
+class RouteDecision(BaseModel):
+    route: Literal[
+        "direct_answer",
+        "local_retrieval",
+        "web_search",
+    ] = Field(
+        description="Choose the best strategy for answering the question."
+    )
+```
+
+The router model should be given clear criteria: - `direct_answer`: a
+stable, simple question that does not need external evidence. -
+`local_retrieval`: a question likely to be answered by the application's
+trusted document collection. - `web_search`: a question requiring
+current or externally available information.
+
+The router's choice is a decision, not proof that the chosen source
+contains the answer. Later nodes should still handle missing or
+low-quality evidence.
+
+## 7. Implement the nodes
+
+The following is a framework for the workflow. Replace the placeholder
+functions with your actual LLM, vector-store retriever, and web-search
+tool.
+
+``` python
+def direct_answer(state: GraphState) -> GraphState:
+    question = state["question"]
+
+    # Replace with your LLM call.
+    answer = answer_without_retrieval(question)
+
+    return {"answer": answer}
+
+
+def retrieve_local(state: GraphState) -> GraphState:
+    question = state["question"]
+
+    # Replace with your vector-store retriever.
+    documents = retriever.invoke(question)
+
+    return {"documents": documents}
+
+
+def grade_documents(state: GraphState) -> GraphState:
+    question = state["question"]
+    documents = state.get("documents", [])
+
+    # Replace with your relevance-grading chain.
+    relevant_documents = grade_and_filter_documents(
+        question, documents
+    )
+
+    return {"documents": relevant_documents}
+
+
+def web_search(state: GraphState) -> GraphState:
+    question = state["question"]
+
+    # Replace with your web-search tool.
+    web_documents = search_web(question)
+
+    # This example replaces the document list with web results.
+    # If both local and web evidence are needed, combine and label them.
+    return {"documents": web_documents}
+
+
+def generate_answer(state: GraphState) -> GraphState:
+    question = state["question"]
+    documents = state.get("documents", [])
+
+    # Format documents into context before calling the LLM.
+    context = "\n\n".join(
+        document.page_content for document in documents
+    )
+
+    # Replace with your grounded answer-generation chain.
+    answer = generate_from_context(question, context)
+
+    return {
+        "context": context,
+        "answer": answer,
+    }
+```
+
+The functions `answer_without_retrieval`, `grade_and_filter_documents`,
+`search_web`, and `generate_from_context` are placeholders, not built-in
+LangGraph functions. They must be implemented using the chosen model and
+tools.
+
+## 8. Connect the graph with conditional edges
+
+``` python
+from langgraph.graph import StateGraph, START, END
+
+builder = StateGraph(GraphState)
+
+builder.add_node("direct_answer", direct_answer)
+builder.add_node("retrieve_local", retrieve_local)
+builder.add_node("grade_documents", grade_documents)
+builder.add_node("web_search", web_search)
+builder.add_node("generate_answer", generate_answer)
+
+builder.add_conditional_edges(
+    START,
+    route_question,
+    {
+        "direct_answer": "direct_answer",
+        "local_retrieval": "retrieve_local",
+        "web_search": "web_search",
+    },
+)
+
+builder.add_edge("direct_answer", END)
+
+builder.add_edge("retrieve_local", "grade_documents")
+
+def route_after_grading(state: GraphState) -> str:
+    if state.get("documents"):
+        return "generate_answer"
+    return "web_search"
+
+builder.add_conditional_edges(
+    "grade_documents",
+    route_after_grading,
+    {
+        "generate_answer": "generate_answer",
+        "web_search": "web_search",
+    },
+)
+
+builder.add_edge("web_search", "generate_answer")
+builder.add_edge("generate_answer", END)
+
+graph = builder.compile()
+```
+
+Invoke the graph with a question:
+
+``` python
+result = graph.invoke({
+    "question": "What is the latest LangGraph release?"
+})
+
+print(result["answer"])
+```
+
+Important implementation notes:
+
+-   This code is a structural template. The placeholder model and search
+    functions must exist before it can run.
+-   The simple post-grading route above treats a non-empty document list
+    as usable. In a real CRAG-style workflow, use the relevance grader's
+    explicit result or filtered documents to decide whether local
+    evidence is sufficient.
+-   If local documents are irrelevant, the workflow should not generate
+    an answer as if they were valid evidence.
+-   If the web search returns no useful evidence, handle that case
+    explicitly rather than forcing an unsupported answer.
+-   The direct-answer path can still benefit from confidence checks,
+    citations, or a policy requiring retrieval for high-stakes
+    questions.
+-   Add retry limits to any loop so a question cannot trigger endless
+    retrieval or generation attempts.
+
+## 9. A stronger Adaptive RAG design using CRAG
+
+The workflow above can be improved by making the local-retrieval path
+use the CRAG logic you already learned:
+
+``` text
+START
+  |
+  v
+route_question
+  |
+  +--> direct_answer ----------------------> END
+  |
+  +--> local_retrieval --> grade_documents
+  |                            |
+  |                    +-------+-------+
+  |                    |               |
+  |               relevant         irrelevant
+  |                    |               |
+  |                    v               v
+  |                generate        web_search
+  |                    |               |
+  |                    |               v
+  |                    |            generate
+  |                    |               |
+  +--> web_search -----+---------------+
+                                       |
+                                       v
+                                      END
+```
+
+This combines two ideas: 1. **Adaptive routing** chooses the initial
+strategy. 2. **Corrective retrieval** checks whether the local retrieval
+path needs web-search fallback.
+
+An additional answer-grading node can be added after generation to check
+support and usefulness, creating a Self-RAG-inspired reflection step.
+
+## 10. Where Self-RAG fits
+
+Adaptive RAG, CRAG, and Self-RAG do not have to be separate
+applications.
+
+A combined workflow can: 1. Route the question to a suitable strategy
+(Adaptive RAG). 2. Grade local retrieval and fall back to web search if
+needed (CRAG). 3. Evaluate whether the final answer is supported and
+useful, then revise or retry when appropriate (Self-RAG-inspired
+behavior).
+
+The exact original Self-RAG method uses a model trained to produce
+special reflection tokens; an ordinary LangGraph loop with an LLM
+evaluator is an inspired engineering implementation, not an exact
+reproduction of that research method.
+
+## 11. Testing Adaptive RAG
+
+Test each route separately:
+
+  -----------------------------------------------------------------------
+  Test question           Expected route          What to verify
+  ----------------------- ----------------------- -----------------------
+  "What is 2 + 2?"        Direct answer           No unnecessary
+                                                  retrieval
+
+  "Explain the            Local retrieval         Relevant local passages
+  `StateGraph` class in                           are retrieved
+  my documentation."                              
+
+  "What is the latest     Web search              Search is used for
+  LangGraph release?"                             up-to-date evidence
+
+  A question whose local  Local retrieval, then   CRAG correction
+  documents are           web fallback            activates
+  irrelevant                                      
+
+  A question for which    Appropriate retrieval   The system does not
+  neither source has      path, then graceful     invent an answer
+  evidence                fallback                
+  -----------------------------------------------------------------------
+
+Track route accuracy, retrieval relevance, answer correctness,
+groundedness, latency, and cost. Routing that looks sensible in a few
+examples should still be evaluated on a representative set of real
+questions.
+
+## 12. Final comparison
+
+  --------------------------------------------------------------------------
+  Feature        Basic RAG      CRAG           Self-RAG       Adaptive RAG
+  -------------- -------------- -------------- -------------- --------------
+  Retrieves      Yes            Yes            When useful    Depending on
+  documents                                                   route
+
+  Checks         Not            Central        Yes, as part   Depends on
+  retrieval      necessarily    feature        of reflection  selected
+  relevance                                                   workflow
+
+  Uses web       Not            Common         Possible       One available
+  fallback       necessarily    corrective                    strategy
+                                action                        
+
+  Evaluates the  Not            Not its        Central        Optional,
+  final answer   necessarily    central focus  feature        depending on
+                                                              design
+
+  Chooses        Usually no     Not its main   Retrieval      Central
+  between                       focus          decision is    feature
+  multiple                                     part of its    
+  initial                                      method         
+  strategies                                                  
+  --------------------------------------------------------------------------
+
+**Takeaway:** Adaptive RAG chooses the strategy, CRAG corrects poor
+retrieval, and Self-RAG reflects on retrieval and generation. In
+LangGraph, these ideas can be represented through state, nodes,
+conditional edges, and bounded retry loops.
