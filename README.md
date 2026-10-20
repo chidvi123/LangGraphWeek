@@ -5,11 +5,7 @@
 > studied ReAct, Reflection, and a Reflexion-style agent. It also covers
 > building RAG workflows with LangGraph, followed by Self-RAG and
 > Corrective RAG (CRAG).
->
-> **Current learning status:** ReAct ✅ · Reflection ✅ ·
-> Reflexion-style agent ✅ · RAG in progress · Self-RAG next · CRAG
-> after that.
->
+
 > Examples are learning patterns. Verify exact API signatures against
 > the versions installed in your environment.
 
