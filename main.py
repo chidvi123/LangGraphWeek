@@ -19,8 +19,9 @@ def should_continue(state:MessagesState) -> str:
         return END
     return ACT
 
+# building graph
 
-flow = StateGraph(MessagesState)
+flow = StateGraph(MessagesState) # define the graph and initilaise the state with MessageState
 
 flow.add_node(AGENT_REASON,run_agent_reasoning)
 flow.set_entry_point(AGENT_REASON)
@@ -33,7 +34,7 @@ flow.add_conditional_edges(AGENT_REASON,should_continue,
     }
 )
 
-flow.add_edge(ACT,AGENT_REASON)
+flow.add_edge(ACT,AGENT_REASON) 
 
 
 app=flow.compile()

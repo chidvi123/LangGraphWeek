@@ -18,8 +18,7 @@ def triple(num:float)->float:
 tools = [TavilySearch(max_results=1), triple]
 
 
-llm = ChatGroq(model="openai/gpt-oss-120b", temperature=0).bind_tools(tools)
-
+llm = ChatGroq(model="openai/gpt-oss-120b", temperature=0).bind_tools(tools) # binding tools to the model
 
 
 
